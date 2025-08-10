@@ -41,36 +41,22 @@ const firebaseApp = () => {
   return null;
 };
 
-// Questions array (matching Swift app)
+// Questions array (business automation focus)
 const questions: string[] = [
-  "What's your full name? Please say your first and last name.",
-  "What kind of device are you bringing in?",
-  "What's the brand and model, if you know it?",
-  "What's the main issue you've been encountering with the device?",
-  "How long have you been experiencing this issue?",
-  "Has the device been dropped, exposed to liquid, or repaired before?",
-  "What have you already tried to fix it, if anything?",
-  "Is the issue constant, or does it happen only sometimes?",
-  "Are there any sounds, lights, or error messages when the issue happens?",
-  "Do you need your data backed up or recovered?",
-  "Do you have a password, PIN, or lock code we'll need to test the device?",
-  "Are there any other issues or things you'd like us to check while it's here?"
+  "What in your business do you want to automate?",
+  "What position or process do you want to replace to save money and time?",
+  "What type of AI system can help improve processes?",
+  "What industry are you in?",
+  "What is your company size, how many employees?"
 ];
 
-// Field keys aligned with questions (matching Swift app)
+// Field keys aligned with questions (business automation focus)
 const fieldKeys: string[] = [
-  "name",                   // special
-  "deviceType",
-  "brandModel",             // brand/model (and brandModel combined)
-  "mainIssue",
-  "issueDuration",
-  "damageExposure",
-  "troubleshootingTried",
-  "issueFrequency",
-  "signalsOrErrors",
-  "requiresBackup",         // boolean expected
-  "unlockCode",
-  "otherConcerns"
+  "automationTarget",      // What they want to automate
+  "processToReplace",      // Position/process to replace
+  "aiSystemType",          // Type of AI system needed
+  "industry",              // Industry they're in
+  "companySize"            // Company size/employee count
 ];
 
 // Interface for QA entry
@@ -308,7 +294,7 @@ export default function AIConsultantPage() {
     }
   };
 
-  // Normalize answer (matching Swift app logic)
+  // Normalize answer (business automation focus)
   const normalizeAnswer = async (
     transcript: string,
     questionIndex: number,
@@ -318,19 +304,25 @@ export default function AIConsultantPage() {
 
     let systemPrompt: string;
     if (questionIndex === 0) {
-      // Name step
-      systemPrompt = `You are a kiosk assistant. From the user's spoken answer, return EXACTLY this JSON object with no extra text or backticks:
-{"fields":{"firstName":"<first>","lastName":"<last>","fullName":"<first> <last>"}}
-- If only one name is given, best-guess first and last, but always set fullName.`;
-    } else if (key === "brandModel") {
-      systemPrompt = `Return EXACTLY:
-{"fields":{"brand":"<brand or empty>","model":"<model or empty>","brandModel":"<brand> <model>".trim()}}`;
-    } else if (key === "requiresBackup") {
-      systemPrompt = `Return EXACTLY:
-{"fields":{"requiresBackup":<true or false>}}`;
-    } else if (key === "unlockCode") {
-      systemPrompt = `Return EXACTLY:
-{"fields":{"unlockCode":"<alphanumeric or empty>"}}  // if none provided, use empty string`;
+      // Automation target
+      systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<specific business process or task they want to automate>"}}
+No extra text or backticks.`;
+    } else if (questionIndex === 1) {
+      // Process to replace
+      systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<specific position, role, or process they want to replace>"}}
+No extra text or backticks.`;
+    } else if (questionIndex === 2) {
+      // AI system type
+      systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<type of AI system that would help (e.g., chatbot, automation software, computer vision, etc.)>"}}
+No extra text or backticks.`;
+    } else if (questionIndex === 3) {
+      // Industry
+      systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<their industry or business sector>"}}
+No extra text or backticks.`;
+    } else if (questionIndex === 4) {
+      // Company size
+      systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<number of employees or company size category>"}}
+No extra text or backticks.`;
     } else {
       systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<short, clear answer>"}}
 No extra text or backticks.`;
@@ -399,19 +391,6 @@ No extra text or backticks.`;
         
         console.log('Document created with ID:', docRef.id);
         
-        // If fields include name parts, set at top level
-        if (questionIndex === 0) {
-          const nameUpdate: Record<string, unknown> = {};
-          if (fields.firstName) nameUpdate.firstName = fields.firstName;
-          if (fields.lastName) nameUpdate.lastName = fields.lastName;
-          if (fields.fullName) nameUpdate.fullName = fields.fullName;
-          
-          if (Object.keys(nameUpdate).length > 0) {
-            console.log('Updating name fields...');
-            await setDoc(docRef, nameUpdate, { merge: true });
-          }
-        }
-
         customerDocIDRef.current = docRef.id;
         console.log('Created new customer document:', docRef.id);
       } else {
@@ -427,19 +406,6 @@ No extra text or backticks.`;
 
         await setDoc(ref, update, { merge: true });
         console.log('Updated customer document:', customerDocIDRef.current);
-      }
-
-      // Special: if this was brand/model, also ensure "brandModel" consolidated is present
-      if (fieldKeys[questionIndex] === "brandModel" && customerDocIDRef.current) {
-        console.log('Processing brand/model consolidation...');
-        const brand = (fields.brand as string)?.trim() || '';
-        const model = (fields.model as string)?.trim() || '';
-        const combined = [brand, model].join(' ').trim();
-        
-        if (combined) {
-          const ref = doc(db, 'customers', customerDocIDRef.current);
-          await setDoc(ref, { brandModel: combined }, { merge: true });
-        }
       }
 
       console.log('Saved to Firestore:', {
