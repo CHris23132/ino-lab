@@ -68,14 +68,14 @@ export default function Home() {
 
               {/* CTA Section */}
               <div className="space-y-6 mb-12">
-                <button className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-cyan-600 via-purple-600 to-blue-600 hover:from-cyan-500 hover:via-purple-500 hover:to-blue-500 text-white font-semibold py-6 px-12 rounded-2xl transition-all duration-500 transform hover:scale-105 shadow-2xl hover:shadow-cyan-500/25 border border-cyan-400/30">
+                <a href="/ai-consultant" className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-cyan-600 via-purple-600 to-blue-600 hover:from-cyan-500 hover:via-purple-500 hover:to-blue-500 text-white font-semibold py-6 px-12 rounded-2xl transition-all duration-500 transform hover:scale-105 shadow-2xl hover:shadow-cyan-500/25 border border-cyan-400/30">
                   <Play className="w-6 h-6" />
                   <span>Start AI Consultation</span>
                   <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
                   
                   {/* Button Glow */}
                   <div className="absolute inset-0 bg-gradient-to-r from-cyan-600 via-purple-600 to-blue-600 rounded-2xl blur opacity-0 group-hover:opacity-75 transition-opacity duration-500"></div>
-                </button>
+                </a>
                 
                 <p className="text-sm text-gray-400 font-light">
                   Experience the future of business intelligence
@@ -256,13 +256,13 @@ export default function Home() {
 
             {/* Bottom CTA */}
             <div className="mt-16 text-center">
-              <button className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 hover:from-purple-500 hover:via-pink-500 hover:to-cyan-500 text-white font-semibold py-4 px-8 rounded-2xl transition-all duration-500 transform hover:scale-105 shadow-2xl hover:shadow-purple-500/25 border border-purple-400/30">
+              <a href="/ai-consultant" className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 hover:from-purple-500 hover:via-pink-500 hover:to-cyan-500 text-white font-semibold py-4 px-8 rounded-2xl transition-all duration-500 transform hover:scale-105 shadow-2xl hover:shadow-purple-500/25 border border-purple-400/30">
                 <span>Explore All Solutions</span>
                 <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
                 
                 {/* Button Glow */}
                 <div className="absolute inset-0 bg-gradient-to-r from-purple-600 via-pink-600 to-cyan-600 rounded-2xl blur opacity-0 group-hover:opacity-75 transition-opacity duration-500"></div>
-              </button>
+              </a>
             </div>
           </div>
 
@@ -390,13 +390,13 @@ export default function Home() {
 
             {/* Bottom CTA */}
             <div className="mt-16 text-center">
-              <button className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-emerald-600 via-cyan-600 to-blue-600 hover:from-emerald-500 hover:via-cyan-500 hover:to-blue-500 text-white font-semibold py-4 px-8 rounded-2xl transition-all duration-500 transform hover:scale-105 shadow-2xl hover:shadow-emerald-500/25 border border-emerald-400/30">
+              <a href="/ai-consultant" className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-emerald-600 via-cyan-600 to-blue-600 hover:from-emerald-500 hover:via-cyan-500 hover:to-blue-500 text-white font-semibold py-4 px-8 rounded-2xl transition-all duration-500 transform hover:scale-105 shadow-2xl hover:shadow-emerald-500/25 border border-emerald-400/30">
                 <span>Learn More About Our AI</span>
                 <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
                 
                 {/* Button Glow */}
                 <div className="absolute inset-0 bg-gradient-to-r from-emerald-600 via-cyan-600 to-blue-600 rounded-2xl blur opacity-0 group-hover:opacity-75 transition-opacity duration-500"></div>
-              </button>
+              </a>
             </div>
           </div>
         </div>
