@@ -6,19 +6,19 @@ import OpenAI from 'openai';
 
 export async function POST(req: Request) {
   try {
-    const { message, conversationHistory } = await req.json();
-    
+    const { message, systemPrompt } = await req.json();
+
     if (!message || typeof message !== 'string') {
       return NextResponse.json({ error: 'Missing message' }, { status: 400 });
     }
 
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-    // Build conversation context
+    // Build messages array
     const messages = [
       {
         role: 'system' as const,
-        content: `You are an AI consultant assistant specializing in helping businesses discover how AI solutions can save them time and money. You have expertise in:
+        content: systemPrompt || `You are an AI consultant assistant specializing in helping businesses discover how AI solutions can save them time and money. You have expertise in:
 
 - Intelligent kiosks and customer service automation
 - Computer vision and custom AI software
@@ -27,7 +27,6 @@ export async function POST(req: Request) {
 
 Be helpful, professional, and focus on understanding their business needs to recommend appropriate AI solutions. Keep responses conversational and informative.`
       },
-      ...(conversationHistory || []).slice(-10), // Keep last 10 messages for context
       {
         role: 'user' as const,
         content: message
@@ -37,7 +36,7 @@ Be helpful, professional, and focus on understanding their business needs to rec
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages,
-      temperature: 0.7,
+      temperature: 0.0, // Use 0 for normalization to get consistent output
       max_tokens: 500,
     });
 

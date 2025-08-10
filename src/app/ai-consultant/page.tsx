@@ -1,544 +1,593 @@
-"use client";
+'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Mic, Square, Sparkles } from "lucide-react";
-import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import {
-  getFirestore,
-  doc,
-  setDoc,
-  serverTimestamp,
-  arrayUnion
-} from 'firebase/firestore';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, setDoc, serverTimestamp, arrayUnion, collection, addDoc } from 'firebase/firestore';
+import { Mic, Square, Sparkles } from 'lucide-react';
 
 // Firebase configuration
-function firebaseApp() {
-  if (!getApps().length) {
-    initializeApp({
-      apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-      authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-      storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-      appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-    });
+const firebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+};
+
+// Debug Firebase config
+console.log('Firebase config check:', {
+  hasApiKey: !!process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  hasProjectId: !!process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID
+});
+
+// Extend Window interface
+declare global {
+  interface Window {
+    firebaseApp?: ReturnType<typeof initializeApp>;
   }
-  return getApp();
 }
 
-interface Answer {
+// Initialize Firebase
+const firebaseApp = () => {
+  if (typeof window !== 'undefined') {
+    if (!window.firebaseApp) {
+      console.log('Initializing Firebase app...');
+      window.firebaseApp = initializeApp(firebaseConfig);
+    }
+    return window.firebaseApp;
+  }
+  return null;
+};
+
+// Questions array (matching Swift app)
+const questions: string[] = [
+  "What's your full name? Please say your first and last name.",
+  "What kind of device are you bringing in?",
+  "What's the brand and model, if you know it?",
+  "What's the main issue you've been encountering with the device?",
+  "How long have you been experiencing this issue?",
+  "Has the device been dropped, exposed to liquid, or repaired before?",
+  "What have you already tried to fix it, if anything?",
+  "Is the issue constant, or does it happen only sometimes?",
+  "Are there any sounds, lights, or error messages when the issue happens?",
+  "Do you need your data backed up or recovered?",
+  "Do you have a password, PIN, or lock code we'll need to test the device?",
+  "Are there any other issues or things you'd like us to check while it's here?"
+];
+
+// Field keys aligned with questions (matching Swift app)
+const fieldKeys: string[] = [
+  "name",                   // special
+  "deviceType",
+  "brandModel",             // brand/model (and brandModel combined)
+  "mainIssue",
+  "issueDuration",
+  "damageExposure",
+  "troubleshootingTried",
+  "issueFrequency",
+  "signalsOrErrors",
+  "requiresBackup",         // boolean expected
+  "unlockCode",
+  "otherConcerns"
+];
+
+// Interface for QA entry
+interface QAEntry {
+  index: number;
   question: string;
-  answer: string;
-  timestamp: Date;
+  transcript: string;
+  normalized: Record<string, unknown>;
 }
 
-const QUESTIONS = [
-  "What in your business do you want to automate?",
-  "What position or process do you want to replace to save money and time?",
-  "What type of AI system can help improve your processes?",
-  "What industry are you in?",
-  "What is your company size, how many employees?"
-] as const;
+// Alert message interface
+interface AlertMessage {
+  id: string;
+  title: string;
+  message: string;
+}
 
-export default function AIConsultant() {
-  // UI state
-  const [isCallActive, setIsCallActive] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+export default function AIConsultantPage() {
+  // State variables (matching Swift app)
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [transcription, setTranscription] = useState<string | null>(null);
-  const [silenceTimer, setSilenceTimer] = useState<NodeJS.Timeout | null>(null);
-  const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt' | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [alert, setAlert] = useState<AlertMessage | null>(null);
+  const [finished, setFinished] = useState(false);
 
-  // Recording refs
+  // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const audioChunksRef = useRef<BlobPart[]>([]);
+  const audioChunksRef = useRef<Blob[]>([]);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const customerDocIDRef = useRef<string | null>(null);
 
-  // Firestore tracking
-  const [consultationDocID, setConsultationDocID] = useState<string | null>(null);
-
-  // Function refs to avoid circular dependencies
-  const askQuestionRef = useRef<((questionIndex: number) => Promise<void>) | null>(null);
-  const endConsultationRef = useRef<(() => Promise<void>) | null>(null);
-  const startListeningRef = useRef<(() => Promise<void>) | null>(null);
-  const stopListeningRef = useRef<(() => Promise<void>) | null>(null);
-
-  // Check microphone permission status
-  const checkMicPermission = useCallback(async (): Promise<boolean> => {
-    try {
-      // Check if we already have permission
-      const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-      
-      if (permission.state === 'granted') {
-        setMicPermission('granted');
-        return true;
-      } else if (permission.state === 'denied') {
-        setMicPermission('denied');
-        setError('Microphone access is required. Please enable it in your browser settings.');
-        return false;
-      } else {
-        setMicPermission('prompt');
-        return false;
-      }
-    } catch (error) {
-      // Fallback for browsers that don't support permissions API
-      setMicPermission('prompt');
-      return false;
-    }
-  }, []);
+  // Computed values
+  const currentQuestion = questions[currentQuestionIndex];
+  const totalSteps = questions.length;
 
   // Request microphone permission
-  const requestMicPermission = useCallback(async (): Promise<boolean> => {
+  const requestMicPermission = useCallback(async () => {
     try {
-      setError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      
-      // Stop the stream immediately - we just wanted permission
-      stream.getTracks().forEach(track => track.stop());
-      
-      setMicPermission('granted');
-      return true;
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      
-      if (errorMessage.includes('Permission denied') || errorMessage.includes('NotAllowedError')) {
-        setMicPermission('denied');
-        setError('Microphone access was denied. Please allow microphone access and try again.');
-      } else if (errorMessage.includes('NotFoundError') || errorMessage.includes('NotReadableError')) {
-        setError('No microphone found. Please connect a microphone and try again.');
-      } else if (errorMessage.includes('NotSupportedError') || errorMessage.includes('NotSecureContextError')) {
-        setError('Microphone access requires a secure connection (HTTPS) or localhost. Please access this site via localhost:3000 instead of IP address.');
-      } else {
-        setError('Failed to access microphone. Please check your browser settings and ensure you\'re using localhost:3000.');
-      }
-      
-      return false;
-    }
-  }, []);
-
-  // Speak text using TTS
-  const speak = useCallback(async (text: string): Promise<void> => {
-    try {
-      if (ttsAudioRef.current) {
-        ttsAudioRef.current.pause();
-        URL.revokeObjectURL(ttsAudioRef.current.src);
-      }
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
+      await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (error) {
+      setAlert({
+        id: Date.now().toString(),
+        title: "Microphone Access Needed",
+        message: "Please enable microphone access in Settings to proceed."
       });
-      if (!res.ok) throw new Error('TTS request failed');
-      const buf = await res.arrayBuffer();
-      const blob = new Blob([buf], { type: 'audio/mpeg' });
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      ttsAudioRef.current = audio;
-      await audio.play();
-    } catch (error: unknown) {
-      console.error('TTS error:', error);
     }
   }, []);
 
-  // Save answer to Firestore
-  const saveToFirestore = useCallback(async (answer: Answer) => {
+  // Start recording
+  const startRecording = useCallback(async () => {
     try {
-      const app = firebaseApp();
-      const auth = getAuth(app);
-      
-      const db = getFirestore(app);
-
-      if (consultationDocID) {
-        const ref = doc(db, 'ai_consultations', consultationDocID);
-        const updateData: Record<string, unknown> = {
-          answers: arrayUnion(answer),
-          currentQuestion: currentQuestionIndex + 1,
-          lastUpdated: serverTimestamp(),
-        };
-        await setDoc(ref, updateData, { merge: true });
-      }
-    } catch (error: unknown) {
-      console.error('Firestore save error:', error);
-    }
-  }, [consultationDocID, currentQuestionIndex]);
-
-  // Save consultation complete
-  const saveConsultationComplete = useCallback(async () => {
-    try {
-      const app = firebaseApp();
-      const auth = getAuth(app);
-      
-      const db = getFirestore(app);
-
-      if (consultationDocID) {
-        const ref = doc(db, 'ai_consultations', consultationDocID);
-        const finalData: Record<string, unknown> = {
-          status: 'completed',
-          completedAt: serverTimestamp(),
-          totalQuestions: QUESTIONS.length,
-          userId: auth.currentUser?.uid || 'anonymous',
-        };
-        await setDoc(ref, finalData, { merge: true });
-      }
-    } catch (error: unknown) {
-      console.error('Firestore save error:', error);
-    }
-  }, [consultationDocID]);
-
-  // End consultation
-  const endConsultation = useCallback(async () => {
-    setIsCallActive(false);
-    setIsListening(false);
-    setIsProcessing(false);
-    setIsSpeaking(false);
-    
-    const completionMessage = "Thank you for completing the consultation. I have all the information I need to help you with AI solutions for your business.";
-    await speak(completionMessage);
-    
-    // Save final consultation data
-    await saveConsultationComplete();
-  }, [speak, saveConsultationComplete]);
-
-  // Process the recorded answer
-  const processAnswer = useCallback(async (audioBlob: Blob) => {
-    setIsProcessing(true);
-    try {
-      // 1) Transcribe
-      const fd = new FormData();
-      fd.append('file', audioBlob, `answer_${currentQuestionIndex}.webm`);
-      const tr = await fetch('/api/transcribe', { method: 'POST', body: fd });
-      if (!tr.ok) throw new Error('Transcription failed');
-      const { text } = await tr.json();
-      setTranscription(text);
-
-      // 2) Save answer
-      const answer: Answer = {
-        question: QUESTIONS[currentQuestionIndex],
-        answer: text,
-        timestamp: new Date()
-      };
-
-      // 3) Save to Firestore
-      await saveToFirestore(answer);
-
-      // 4) Move to next question
-      const nextIndex = currentQuestionIndex + 1;
-      setCurrentQuestionIndex(nextIndex);
-      
-      if (nextIndex < QUESTIONS.length) {
-        setTimeout(() => {
-          askQuestionRef.current?.(nextIndex);
-        }, 2000);
-      } else {
-        await endConsultation();
-      }
-
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      console.error('Processing Error:', errorMessage);
-    } finally {
-      setIsProcessing(false);
-    }
-  }, [currentQuestionIndex, saveToFirestore, endConsultation]);
-
-  // Stop listening and process answer
-  const stopListening = useCallback(async () => {
-    if (!isListening || !mediaRecorderRef.current) return;
-
-    // Clear silence timer
-    if (silenceTimer) {
-      clearTimeout(silenceTimer);
-      setSilenceTimer(null);
-    }
-
-    const recorder = mediaRecorderRef.current;
-    recorder.stop();
-    mediaStreamRef.current?.getTracks().forEach(t => t.stop());
-    mediaRecorderRef.current = null;
-    setIsListening(false);
-
-    // Build the blob and process
-    const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-    audioChunksRef.current = [];
-    await processAnswer(blob);
-  }, [isListening, silenceTimer, processAnswer]);
-
-  // Silence detection for auto-stop
-  const startSilenceDetection = useCallback(() => {
-    const timer = setTimeout(() => {
-      if (isListening) {
-        stopListeningRef.current?.();
-      }
-    }, 3000); // Stop after 3 seconds of silence
-    setSilenceTimer(timer);
-  }, [isListening]);
-
-  // Start listening for answer
-  const startListening = useCallback(async () => {
-    try {
-      if (ttsAudioRef.current) {
+      // Stop TTS if playing
+      if (ttsAudioRef.current && !ttsAudioRef.current.paused) {
         ttsAudioRef.current.pause();
       }
-      setTranscription(null);
-      setIsProcessing(false);
 
-      const mime = 'audio/webm;codecs=opus';
+      setTranscription(null);
+      setIsLoading(false);
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-      const recorder = new MediaRecorder(stream, { mimeType: mime });
+      // Try different audio formats for better compatibility
+      const mimeTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/wav'
+      ];
+      
+      let selectedMimeType = null;
+      for (const mimeType of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(mimeType)) {
+          selectedMimeType = mimeType;
+          break;
+        }
+      }
+      
+      if (!selectedMimeType) {
+        throw new Error('No supported audio format found');
+      }
+
+      console.log('Using audio format:', selectedMimeType);
+
+      const recorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
       audioChunksRef.current = [];
 
       recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
       };
 
       recorder.start();
       mediaRecorderRef.current = recorder;
-      setIsListening(true);
-
-      // Start silence detection
-      startSilenceDetection();
-    } catch (err: unknown) {
-      const errorMessage = err instanceof Error ? err.message : 'Could not start recording.';
-      console.error('Recording Error:', errorMessage);
-      setError('Failed to start recording. Please check your microphone.');
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Recording error:', error);
+      setAlert({
+        id: Date.now().toString(),
+        title: "Recording Error",
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
     }
-  }, [startSilenceDetection]);
+  }, []);
 
-  // Ask a specific question
-  const askQuestion = useCallback(async (questionIndex: number) => {
-    if (questionIndex >= QUESTIONS.length) {
-      // Consultation complete
-      await endConsultation();
-      return;
+  // Stop recording
+  const stopRecording = useCallback(() => {
+    if (!isRecording || !mediaRecorderRef.current) return;
+    
+    mediaRecorderRef.current.stop();
+    setIsRecording(false);
+
+    // Process the answer
+    mediaRecorderRef.current.onstop = async () => {
+      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      await processAnswer(audioBlob);
+    };
+  }, [isRecording]);
+
+  // TTS - Speak current question
+  const speakCurrentQuestion = useCallback(async () => {
+    if (isRecording) return;
+    
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: currentQuestion })
+      });
+
+      if (response.ok) {
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        
+        if (ttsAudioRef.current) {
+          ttsAudioRef.current.src = audioUrl;
+          ttsAudioRef.current.play();
+        }
+      }
+    } catch (error) {
+      console.error('TTS error:', error);
     }
+  }, [currentQuestion, isRecording]);
 
-    setIsSpeaking(true);
-    const question = QUESTIONS[questionIndex];
-    await speak(question);
-    setIsSpeaking(false);
-    
-    // Start listening after question is asked
-    setTimeout(() => {
-      startListeningRef.current?.();
-    }, 1000);
-  }, [speak, endConsultation]);
+  // Process answer (matching Swift app workflow)
+  const processAnswer = async (audioBlob: Blob) => {
+    setIsLoading(true);
 
-  // Start the consultation
-  const startConsultation = useCallback(async () => {
-    // First check if we have microphone permission
-    const hasPermission = await checkMicPermission();
-    
-    if (!hasPermission) {
-      // Request permission
-      const granted = await requestMicPermission();
-      if (!granted) {
-        return; // Don't start if permission denied
+    try {
+      // 1) Transcribe with Whisper
+      const transcript = await transcribeAudio(audioBlob);
+      setTranscription(transcript);
+
+      // 2) Normalize to JSON for storage
+      const normalizedJSON = await normalizeAnswer(
+        transcript,
+        currentQuestionIndex,
+        currentQuestion
+      );
+
+      // 3) Save to Firestore
+      await saveToFirestore(
+        normalizedJSON,
+        currentQuestionIndex,
+        currentQuestion,
+        transcript
+      );
+
+      // 4) Advance or finish
+      if (currentQuestionIndex + 1 < totalSteps) {
+        setCurrentQuestionIndex(prev => prev + 1);
+      } else {
+        setFinished(true);
+        setAlert({
+          id: Date.now().toString(),
+          title: "All Done",
+          message: "Thanks! The customer record has been created and updated."
+        });
       }
+    } catch (error) {
+      setAlert({
+        id: Date.now().toString(),
+        title: "Processing Error",
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    setIsCallActive(true);
-    setCurrentQuestionIndex(0);
-    setConsultationDocID(crypto.randomUUID());
-    setError(null);
-    
-    // Ask the first question
-    await askQuestion(0);
-  }, [checkMicPermission, requestMicPermission, askQuestion]);
+  // Transcribe audio with Whisper
+  const transcribeAudio = async (audioBlob: Blob): Promise<string> => {
+    try {
+      console.log('Transcribing audio:', {
+        size: audioBlob.size,
+        type: audioBlob.type
+      });
 
-  // Update function refs
-  useEffect(() => {
-    askQuestionRef.current = askQuestion;
-    endConsultationRef.current = endConsultation;
-    startListeningRef.current = startListening;
-    stopListeningRef.current = stopListening;
-  }, [askQuestion, endConsultation, startListening, stopListening]);
+      // Create file with correct type and extension
+      let fileName = 'audio.webm';
+      let fileType = 'audio/webm';
+      
+      if (audioBlob.type.includes('mp4')) {
+        fileName = 'audio.mp4';
+        fileType = 'audio/mp4';
+      } else if (audioBlob.type.includes('wav')) {
+        fileName = 'audio.wav';
+        fileType = 'audio/wav';
+      }
 
-  // Handle button click
-  const handleButtonClick = useCallback(() => {
-    if (isCallActive) {
-      // Stop consultation
-      setIsCallActive(false);
-      setIsListening(false);
-      setIsProcessing(false);
-      setIsSpeaking(false);
-      if (silenceTimer) {
-        clearTimeout(silenceTimer);
-        setSilenceTimer(null);
+      const file = new File([audioBlob], fileName, { type: fileType });
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('model', 'whisper-1');
+
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`Transcription failed: ${errorData.error || response.statusText}`);
       }
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
-      }
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(t => t.stop());
-      }
+
+      const data = await response.json();
+      return data.text;
+    } catch (error) {
+      console.error('Transcription error:', error);
+      throw error;
+    }
+  };
+
+  // Normalize answer (matching Swift app logic)
+  const normalizeAnswer = async (
+    transcript: string,
+    questionIndex: number,
+    questionText: string
+  ): Promise<string> => {
+    const key = fieldKeys[questionIndex];
+
+    let systemPrompt: string;
+    if (questionIndex === 0) {
+      // Name step
+      systemPrompt = `You are a kiosk assistant. From the user's spoken answer, return EXACTLY this JSON object with no extra text or backticks:
+{"fields":{"firstName":"<first>","lastName":"<last>","fullName":"<first> <last>"}}
+- If only one name is given, best-guess first and last, but always set fullName.`;
+    } else if (key === "brandModel") {
+      systemPrompt = `Return EXACTLY:
+{"fields":{"brand":"<brand or empty>","model":"<model or empty>","brandModel":"<brand> <model>".trim()}}`;
+    } else if (key === "requiresBackup") {
+      systemPrompt = `Return EXACTLY:
+{"fields":{"requiresBackup":<true or false>}}`;
+    } else if (key === "unlockCode") {
+      systemPrompt = `Return EXACTLY:
+{"fields":{"unlockCode":"<alphanumeric or empty>"}}  // if none provided, use empty string`;
     } else {
-      // Start consultation
-      startConsultation();
+      systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<short, clear answer>"}}
+No extra text or backticks.`;
     }
-  }, [isCallActive, silenceTimer, startConsultation]);
+
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: `Question: ${questionText}\nAnswer: ${transcript}`,
+        systemPrompt
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Normalization failed');
+    }
+
+    const data = await response.json();
+    return data.response;
+  };
+
+  // Save to Firestore (matching Swift app structure)
+  const saveToFirestore = async (
+    normalizedJSON: string,
+    questionIndex: number,
+    questionText: string,
+    transcript: string
+  ) => {
+    try {
+      console.log('Starting Firestore save...');
+      
+      const parsed = JSON.parse(normalizedJSON);
+      const fields = parsed.fields || {};
+
+      const app = firebaseApp();
+      if (!app) {
+        throw new Error('Firebase not initialized');
+      }
+      console.log('Firebase app initialized successfully');
+      
+      const db = getFirestore(app);
+      console.log('Firestore instance created');
+
+      const qaEntry: QAEntry = {
+        index: questionIndex,
+        question: questionText,
+        transcript: transcript,
+        normalized: fields
+      };
+
+      console.log('Current customerDocID:', customerDocIDRef.current);
+      console.log('Question index:', questionIndex);
+
+      if (!customerDocIDRef.current) {
+        console.log('Creating new customer document...');
+        // First step creates the doc with auto-generated ID
+        const customersCollection = collection(db, 'customers');
+        console.log('Collection reference created');
+        
+        const docRef = await addDoc(customersCollection, {
+          createdAt: serverTimestamp(),
+          qa: [qaEntry],
+          ...fields
+        });
+        
+        console.log('Document created with ID:', docRef.id);
+        
+        // If fields include name parts, set at top level
+        if (questionIndex === 0) {
+          const nameUpdate: Record<string, unknown> = {};
+          if (fields.firstName) nameUpdate.firstName = fields.firstName;
+          if (fields.lastName) nameUpdate.lastName = fields.lastName;
+          if (fields.fullName) nameUpdate.fullName = fields.fullName;
+          
+          if (Object.keys(nameUpdate).length > 0) {
+            console.log('Updating name fields...');
+            await setDoc(docRef, nameUpdate, { merge: true });
+          }
+        }
+
+        customerDocIDRef.current = docRef.id;
+        console.log('Created new customer document:', docRef.id);
+      } else {
+        console.log('Updating existing customer document...');
+        // Subsequent steps: merge + append to qa
+        const ref = doc(db, 'customers', customerDocIDRef.current);
+        console.log('Document reference created for update');
+        
+        const update: Record<string, unknown> = {
+          qa: arrayUnion(qaEntry),
+          ...fields
+        };
+
+        await setDoc(ref, update, { merge: true });
+        console.log('Updated customer document:', customerDocIDRef.current);
+      }
+
+      // Special: if this was brand/model, also ensure "brandModel" consolidated is present
+      if (fieldKeys[questionIndex] === "brandModel" && customerDocIDRef.current) {
+        console.log('Processing brand/model consolidation...');
+        const brand = (fields.brand as string)?.trim() || '';
+        const model = (fields.model as string)?.trim() || '';
+        const combined = [brand, model].join(' ').trim();
+        
+        if (combined) {
+          const ref = doc(db, 'customers', customerDocIDRef.current);
+          await setDoc(ref, { brandModel: combined }, { merge: true });
+        }
+      }
+
+      console.log('Saved to Firestore:', {
+        questionIndex,
+        fields,
+        customerDocID: customerDocIDRef.current
+      });
+    } catch (error) {
+      console.error('Firestore save error:', error);
+      console.error('Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined
+      });
+      throw error;
+    }
+  };
+
+  // Reset for next customer
+  const resetForNextCustomer = useCallback(() => {
+    // Stop and clear any recorder state
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+    }
+    mediaRecorderRef.current = null;
+    mediaStreamRef.current = null;
+    audioChunksRef.current = [];
+
+    // Reset UI and flow state
+    setIsRecording(false);
+    setIsLoading(false);
+    setTranscription(null);
+    setCurrentQuestionIndex(0);
+
+    // Reset Firestore tracking
+    customerDocIDRef.current = null;
+
+    // Clear flags and alert
+    setFinished(false);
+    setAlert(null);
+  }, []);
+
+  // Effects
+  useEffect(() => {
+    requestMicPermission();
+    speakCurrentQuestion();
+  }, [requestMicPermission, speakCurrentQuestion]);
+
+  useEffect(() => {
+    speakCurrentQuestion();
+  }, [currentQuestionIndex, speakCurrentQuestion]);
+
+  // Handle main button click
+  const handleMainButtonClick = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-black relative overflow-hidden">
-      {/* Animated Background */}
-      <div className="absolute inset-0">
-        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900"></div>
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(120,119,198,0.3),transparent_50%)]"></div>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-[#0B0E19] via-[#111D3A] to-[#1A0F3B] relative overflow-hidden">
+      {/* Subtle glow accent */}
+      <div className="absolute top-0 right-0 w-[420px] h-[420px] bg-gradient-radial from-[#6C47FF]/28 to-transparent rounded-full blur-3xl opacity-50"></div>
 
-      <div className="relative z-10 flex items-center justify-center min-h-screen p-4">
-        <div className="max-w-2xl w-full mx-auto text-center">
-          {/* Header */}
-          <div className="mb-12">
-            <div className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-cyan-500/20 to-purple-500/20 border border-cyan-500/30 rounded-full text-cyan-300 text-sm font-medium backdrop-blur-sm mb-6">
-              <Sparkles className="w-4 h-4" />
-              <span>AI BUSINESS CONSULTANT</span>
-              <Sparkles className="w-4 h-4" />
-            </div>
-            <h1 className="text-4xl md:text-6xl font-bold mb-4 leading-tight">
-              <span className="bg-gradient-to-r from-white via-cyan-200 to-purple-200 bg-clip-text text-transparent">
-                AI Consultant
-              </span>
-            </h1>
-            <p className="text-xl text-gray-300 max-w-xl mx-auto">
-              Answer 5 questions to discover how AI can transform your business
+      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-8">
+        <div className="w-full max-w-md space-y-6">
+          {/* Progress */}
+          <div className="text-center">
+            <p className="text-sm text-white/70">
+              Step {currentQuestionIndex + 1} of {totalSteps}
             </p>
           </div>
 
-          {/* Error Display */}
-          {error && (
-            <div className="mb-8">
-              <div className="bg-red-500/20 border border-red-500/30 rounded-2xl p-4">
-                <p className="text-red-300 text-sm">{error}</p>
-                {micPermission === 'denied' && (
-                  <button
-                    onClick={() => setError(null)}
-                    className="mt-2 text-red-200 hover:text-white text-xs underline"
-                  >
-                    Try Again
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
+          {/* Question */}
+          <div className="text-center">
+            <h2 className="text-xl font-semibold text-white leading-relaxed">
+              {currentQuestion}
+            </h2>
+          </div>
 
-          {/* Status Display */}
-          {isCallActive && (
-            <div className="mb-8">
-              <div className="inline-flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 border border-emerald-500/30 rounded-full text-emerald-300">
-                <div className="w-3 h-3 bg-emerald-400 rounded-full animate-pulse"></div>
-                <span className="font-semibold tracking-wider">
-                  Question {currentQuestionIndex + 1} of {QUESTIONS.length}
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Current Question */}
-          {isCallActive && currentQuestionIndex < QUESTIONS.length && (
-            <div className="mb-8">
-              <div className="bg-black/40 backdrop-blur-xl rounded-2xl border border-white/10 p-6">
-                <h2 className="text-xl font-semibold text-white mb-2">
-                  {QUESTIONS[currentQuestionIndex]}
-                </h2>
-                {isSpeaking && (
-                  <p className="text-cyan-300 text-sm">AI is asking the question...</p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Live transcription */}
+          {/* Live transcription preview */}
           {transcription && (
-            <div className="mb-6">
-              <p className="text-sm text-gray-300 italic">&ldquo;{transcription}&rdquo;</p>
+            <div className="text-center">
+              <p className="text-sm italic text-white/70">
+                &ldquo;{transcription}&rdquo;
+              </p>
             </div>
           )}
 
-          {/* Main Button */}
-          <div className="mb-8">
+          <div className="flex-1"></div>
+
+          {/* Record / Stop Button */}
+          <div className="flex justify-center pt-4">
             <button
-              onClick={handleButtonClick}
-              disabled={isProcessing || !!error}
-              className={`group relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-500 transform hover:scale-110 shadow-2xl ${
-                isCallActive 
-                  ? 'bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-500 hover:to-pink-500' 
-                  : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500'
-              } ${(isProcessing || !!error) ? 'opacity-50 cursor-not-allowed' : ''}`}
+              onClick={handleMainButtonClick}
+              className="relative group"
+              disabled={isLoading}
             >
-              {isCallActive ? (
-                <Square className="w-8 h-8 text-white" />
-              ) : (
-                <Mic className="w-8 h-8 text-white" />
-              )}
-              
-              {/* Voice level visualization when listening */}
-              {isListening && (
-                <div className="absolute inset-0 bg-gradient-to-r from-red-600 to-pink-600 rounded-full animate-pulse"></div>
-              )}
+              <div className="w-24 h-24 rounded-full bg-gradient-to-br from-[#14F1D9] to-[#6C47FF] p-1 shadow-lg shadow-[#6C47FF]/35">
+                <div className="w-full h-full rounded-full bg-gradient-to-br from-[#14F1D9] to-[#6C47FF] flex items-center justify-center border border-white/22">
+                  {isRecording ? (
+                    <Square className="w-9 h-9 text-black/85" fill="currentColor" />
+                  ) : (
+                    <Mic className="w-9 h-9 text-black/85" />
+                  )}
+                </div>
+              </div>
             </button>
           </div>
 
-          {/* Status Messages */}
-          <div className="space-y-2">
-            {!isCallActive && !error && (
-              <p className="text-gray-400">Click to start your AI consultation</p>
-            )}
-            {!isCallActive && error && (
-              <p className="text-red-300 text-sm">Please resolve the microphone issue above</p>
-            )}
-            {isListening && (
-              <p className="text-cyan-300 font-medium">Listening... Speak your answer</p>
-            )}
-            {isProcessing && (
-              <p className="text-purple-300 font-medium">Processing your answer...</p>
-            )}
-            {isSpeaking && (
-              <p className="text-emerald-300 font-medium">AI is speaking...</p>
-            )}
-          </div>
-
-          {/* Progress */}
-          {isCallActive && (
-            <div className="mt-8">
-              <div className="flex justify-center gap-2">
-                {QUESTIONS.map((_, index) => (
-                  <div
-                    key={index}
-                    className={`w-3 h-3 rounded-full ${
-                      index < currentQuestionIndex 
-                        ? 'bg-emerald-400' 
-                        : index === currentQuestionIndex 
-                        ? 'bg-cyan-400 animate-pulse' 
-                        : 'bg-gray-600'
-                    }`}
-                  />
-                ))}
-              </div>
+          {/* Loading */}
+          {isLoading && (
+            <div className="flex justify-center pt-3">
+              <div className="w-6 h-6 border-2 border-[#14F1D9] border-t-transparent rounded-full animate-spin"></div>
             </div>
           )}
 
-          {/* Consultation Complete */}
-          {isCallActive && currentQuestionIndex >= QUESTIONS.length && (
-            <div className="mt-8">
-              <div className="bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 border border-emerald-500/30 rounded-2xl p-6">
-                <h3 className="text-xl font-semibold text-emerald-300 mb-2">
-                  Consultation Complete!
-                </h3>
-                <p className="text-gray-300">
-                  Thank you for your answers. Your consultation has been saved.
-                </p>
-              </div>
-            </div>
-          )}
+          <div className="flex-1"></div>
         </div>
       </div>
+
+      {/* Alert Modal */}
+      {alert && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg p-6 max-w-sm w-full">
+            <h3 className="text-lg font-semibold mb-2">{alert.title}</h3>
+            <p className="text-gray-600 mb-4">{alert.message}</p>
+            <button
+              onClick={() => {
+                setAlert(null);
+                if (finished) {
+                  resetForNextCustomer();
+                }
+              }}
+              className="w-full bg-[#6C47FF] text-white py-2 px-4 rounded-lg hover:bg-[#5A3FD8] transition-colors"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden audio element for TTS */}
+      <audio ref={ttsAudioRef} className="hidden" />
     </div>
   );
 }
