@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, setDoc, serverTimestamp, arrayUnion, collection, addDoc } from 'firebase/firestore';
 import { Mic, Square, Sparkles } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 
 // Firebase configuration
 const firebaseConfig = {
@@ -47,7 +48,8 @@ const questions: string[] = [
   "What position or process do you want to replace to save money and time?",
   "What type of AI system can help improve processes?",
   "What industry are you in?",
-  "What is your company size, how many employees?"
+  "What is your company size, how many employees?",
+  "What is your phone number so we can reach out and contact you?"
 ];
 
 // Field keys aligned with questions (business automation focus)
@@ -56,7 +58,8 @@ const fieldKeys: string[] = [
   "processToReplace",      // Position/process to replace
   "aiSystemType",          // Type of AI system needed
   "industry",              // Industry they're in
-  "companySize"            // Company size/employee count
+  "companySize",           // Company size/employee count
+  "phoneNumber"            // Phone number for contact
 ];
 
 // Interface for QA entry
@@ -83,12 +86,16 @@ export default function AIConsultantPage() {
   const [alert, setAlert] = useState<AlertMessage | null>(null);
   const [finished, setFinished] = useState(false);
 
+  // Router for navigation
+  const router = useRouter();
+
   // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const customerDocIDRef = useRef<string | null>(null);
+  const spokenQuestionsRef = useRef<Set<number>>(new Set());
 
   // Computed values
   const currentQuestion = questions[currentQuestionIndex];
@@ -183,6 +190,11 @@ export default function AIConsultantPage() {
   const speakCurrentQuestion = useCallback(async () => {
     if (isRecording) return;
     
+    // Check if this question has already been spoken
+    if (spokenQuestionsRef.current.has(currentQuestionIndex)) {
+      return;
+    }
+    
     try {
       const response = await fetch('/api/tts', {
         method: 'POST',
@@ -198,11 +210,15 @@ export default function AIConsultantPage() {
           ttsAudioRef.current.src = audioUrl;
           ttsAudioRef.current.play();
         }
+        
+        // Mark this question as spoken
+        spokenQuestionsRef.current.add(currentQuestionIndex);
+        console.log('Spoke question:', currentQuestionIndex);
       }
     } catch (error) {
       console.error('TTS error:', error);
     }
-  }, [currentQuestion, isRecording]);
+  }, [currentQuestion, isRecording, currentQuestionIndex]);
 
   // Process answer (matching Swift app workflow)
   const processAnswer = async (audioBlob: Blob) => {
@@ -322,6 +338,10 @@ No extra text or backticks.`;
     } else if (questionIndex === 4) {
       // Company size
       systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<number of employees or company size category>"}}
+No extra text or backticks.`;
+    } else if (questionIndex === 5) {
+      // Phone number
+      systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<their phone number>"}}
 No extra text or backticks.`;
     } else {
       systemPrompt = `Return EXACTLY: {"fields":{"${key}":"<short, clear answer>"}}
@@ -448,13 +468,15 @@ No extra text or backticks.`;
     // Clear flags and alert
     setFinished(false);
     setAlert(null);
+    
+    // Clear spoken questions tracking
+    spokenQuestionsRef.current.clear();
   }, []);
 
   // Effects
   useEffect(() => {
     requestMicPermission();
-    speakCurrentQuestion();
-  }, [requestMicPermission, speakCurrentQuestion]);
+  }, [requestMicPermission]);
 
   useEffect(() => {
     speakCurrentQuestion();
@@ -542,6 +564,7 @@ No extra text or backticks.`;
                 setAlert(null);
                 if (finished) {
                   resetForNextCustomer();
+                  router.push('/'); // Redirect to homepage after completion
                 }
               }}
               className="w-full bg-[#6C47FF] text-white py-2 px-4 rounded-lg hover:bg-[#5A3FD8] transition-colors"
